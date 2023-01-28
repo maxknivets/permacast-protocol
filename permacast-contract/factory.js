@@ -99,6 +99,10 @@ export async function handle(state, action) {
   const ERROR_INVALID_QUERY_PARAMS_TYPE = `ERROR_QUERY_PARAMS_MUST_BE_OBJECT`;
   const ERROR_TRIM_NOT_BOOLEAN = `ERROR_TRIM_MUST_BE_BOOLEAN`;
 
+  function error(message) {
+    return {result: "error", message: message};
+  };
+
   if (input.function === "createPodcast") {
     /**
      * @dev create a podcast object and append it to
@@ -150,26 +154,74 @@ export async function handle(state, action) {
     const validatedLabel = _validateLabel(label);
     const contentType = input.contentType === "a" ? "audio/" : "video/";
     _notPaused();
-    _validateOwnerSyntax(jwk_n);
-    await _verifyArSignature(jwk_n, sig);
-    await _validatePayment(master_network, network, token, txid);
+    // _validateOwnerSyntax(jwk_n);
+    if (!(typeof jwk_n === "string" && jwk_n?.length === 683)) {
+      return {result: error(ERROR_INVALID_JWK_N_SYNTAX)};
+    }
+    const verifiedSig = await _verifyArSignature(jwk_n, sig)
+    if (verifiedSig) {
+      return {result: verifiedSig};
+    };
+    // await _validatePayment(master_network, network, token, txid);
 
     const coverTxObject = await _getTxObject(cover);
+    if (coverTxObject?.error) {
+      return {result: coverTxObject};
+    }
+
     const coverTxMetadata = _getTxMetadata(coverTxObject);
+    if (coverTxMetadata?.error) {
+      return {result: coverTxMetadata};
+    }
+    
     const minifiedCoverTxObject = await _getTxObject(minifiedCover);
+    if (minifiedCoverTxObject?.error) {
+      return {result: minifiedCoverTxObject};
+    }
+    
     const minifiedCoverTxMetadata = _getTxMetadata(minifiedCoverTxObject);
+    if (minifiedCoverTxMetadata?.error) {
+      return {result: minifiedCoverTxMetadata};
+    }
 
     const caller = await _ownerToAddress(jwk_n);
 
     const pid = SmartWeave.transaction.id;
+    // ContractAssert((
+    //   coverTxMetadata?.contentType?.startsWith(`image/`) ||
+    //   coverTxMetadata?.tags?.find((t) => t.name === `Content-Type`).value.startsWith(`image/`)
+    // ), ERROR_MIME_TYPE);
 
-    ContractAssert(coverTxMetadata?.contentType?.startsWith(`image/`), ERROR_MIME_TYPE);
-    ContractAssert(minifiedCoverTxMetadata?.contentType?.startsWith(`image/`), ERROR_MIME_TYPE);
+    // ContractAssert((
+    //   minifiedCoverTxMetadata?.contentType?.startsWith(`image/`) ||
+    //   minifiedCoverTxMetadata?.tags?.find((t) => t.name === `Content-Type`).value.startsWith(`image/`)
+    // ), ERROR_MIME_TYPE);
 
-    ContractAssert((
-      Number(minifiedCoverTxMetadata?.size || 0) <= POD_MINI_COVER_LIMITS.max &&
-      Number(minifiedCoverTxMetadata?.size || 0) >= POD_MINI_COVER_LIMITS.min
-    ), ERROR_COVER_SIZE_UNACCEPTABLE);
+    // ContractAssert((
+    //   Number(minifiedCoverTxMetadata?.data?.size || 0) <= POD_MINI_COVER_LIMITS.max &&
+    //   Number(minifiedCoverTxMetadata?.data?.size || 0) >= POD_MINI_COVER_LIMITS.min
+    // ), ERROR_COVER_SIZE_UNACCEPTABLE);
+    if (
+      coverTxMetadata?.contentType?.startsWith(`image/`) ||
+      coverTxMetadata?.tags?.find((t) => t.name === `Content-Type`).value.startsWith(`image/`)
+    ) {
+      return {result: error(ERROR_MIME_TYPE)};
+    }
+
+    if (
+      minifiedCoverTxMetadata?.contentType?.startsWith(`image/`) ||
+      minifiedCoverTxMetadata?.tags?.find((t) => t.name === `Content-Type`).value.startsWith(`image/`)
+    ) {
+      return {result: error(ERROR_MIME_TYPE)};
+    }
+
+    if (
+      Number(minifiedCoverTxMetadata?.data?.size || 0) <= POD_MINI_COVER_LIMITS.max &&
+      Number(minifiedCoverTxMetadata?.data?.size || 0) >= POD_MINI_COVER_LIMITS.min
+    ) {
+      return {result: error(ERROR_COVER_SIZE_UNACCEPTABLE)};
+    }
+
 
     _validateStringTypeLen(
       description,
@@ -1024,10 +1076,11 @@ export async function handle(state, action) {
   }
 
   function _validateArweaveAddress(address) {
-    ContractAssert(
-      /[a-z0-9_-]{43}/i.test(address),
-      ERROR_INVALID_ARWEAVE_ADDRESS
-    );
+    if (/[a-z0-9_-]{43}/i.test(address)) return error(ERROR_INVALID_ARWEAVE_ADDRESS)
+    // ContractAssert(
+    //   /[a-z0-9_-]{43}/i.test(address),
+    //   ERROR_INVALID_ARWEAVE_ADDRESS
+    // );
   }
 
   function _validateOwnerSyntax(owner) {
@@ -1104,10 +1157,11 @@ export async function handle(state, action) {
 
   async function _verifyArSignature(owner, signature) {
     try {
-      ContractAssert(
-        !state.signatures.includes(signature),
-        ERROR_SIGNATURE_ALREADY_USED
-      );
+      if (state.signatures.includes(signature)) return error(ERROR_SIGNATURE_ALREADY_USED);
+      // ContractAssert(
+      //   !state.signatures.includes(signature),
+      //   ERROR_SIGNATURE_ALREADY_USED
+      // );
       const sigBody = state.user_sig_messages;
       const encodedMessage = new TextEncoder().encode(
         `${sigBody[sigBody.length - 1]}${owner}`
@@ -1120,11 +1174,12 @@ export async function handle(state, action) {
         encodedMessage,
         typedArraySig
       );
-
-      ContractAssert(isValid, ERROR_INVALID_CALLER_SIGNATURE);
+      if (!isValid) return error(ERROR_INVALID_CALLER_SIGNATURE);
+      // ContractAssert(isValid, ERROR_INVALID_CALLER_SIGNATURE);
       
       state.signatures.push(signature);
     } catch (error) {
+      return error(ERROR_INVALID_CALLER_SIGNATURE);
       throw new ContractError(ERROR_INVALID_CALLER_SIGNATURE);
     }
   }
@@ -1219,7 +1274,8 @@ export async function handle(state, action) {
       const req = await EXM.deterministicFetch(`${state.ar_molecule_endpoint}/tx-gql/${txid}`);
       return req.asJSON();
     } catch(error) {
-      throw new ContractError(ERROR_MOLECULE_SERVER_ERROR);
+      return error(ERROR_MOLECULE_SERVER_ERROR)
+      // throw new ContractError(ERROR_MOLECULE_SERVER_ERROR);
     }
   }
 
@@ -1227,10 +1283,12 @@ export async function handle(state, action) {
     try {
       const contentType = (txObj?.tags?.find((tag) => tag?.name?.toLowerCase() == "content-type"))?.value;
       const size = Number(txObj?.data?.size);
-      ContractAssert(!!size, ERROR_INVALID_DATA_SIZE_TX);
+      if (!!size) return error(ERROR_INVALID_DATA_SIZE_TX)
+      // ContractAssert(!!size, ERROR_INVALID_DATA_SIZE_TX);
 
       return {contentType, size};
     } catch(error) {
+      return error(ERROR_PARSING_TX_METADATA);
       throw new ContractError(ERROR_PARSING_TX_METADATA);
     }
   }
@@ -1242,6 +1300,7 @@ export async function handle(state, action) {
       _validateArweaveAddress(address);
       return address;
     } catch(error) {
+      return error(ERROR_MOLECULE_SERVER_ERROR)
       throw new ContractError(ERROR_MOLECULE_SERVER_ERROR);
     }
   }
